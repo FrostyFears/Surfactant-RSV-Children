@@ -1,0 +1,1144 @@
+---
+title: "Gandhi Consultation"
+author: "Keenan Anderson-Fears"
+date: "7/29/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r, message=F, warning=F}
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(biomaRt)
+library(forcats)
+library(qqman)
+library(lmtest)
+library(kableExtra)
+library(Biobase)
+```
+
+# Formatting the PED and MAP files for PLINK Associations
+```{r, message=F, warning=F}
+cases <- read_excel("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Case_RSV_Severe.xlsx")
+controls <- read_excel("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Control_RSV_mild.xlsx")
+other <- read_excel("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Case_RSV_Severe_Trios.xlsx")
+```
+
+I use a simple binary coding for the two phenotypes, 0 for normal outcome and 1 for severe
+```{r}
+cases <- cases %>% drop_na(`Genotype number`)
+controls <- controls %>% drop_na(`Genotype number`)
+phenotype1 <- data.frame("Phenotype"=matrix(2, nrow=nrow(cases), ncol=1))
+phenotype2 <- data.frame("Phenotype"=matrix(1, nrow=nrow(controls), ncol=1))
+Cases <- cbind(cases, phenotype1)
+Controls <- cbind(controls, phenotype2)
+Full_Data <- rbind(Cases, Controls)
+Full_Data[is.na(Full_Data)] <- "00"
+Full_Data$Gender <- ifelse(Full_Data$Gender=="Male",1,2)
+Full_Data$`Smoking exposure` <- ifelse(Full_Data$`Smoking exposure`=="No",0,1)
+Full_Data$`Pet exposure` <- ifelse(Full_Data$`Pet exposure`=="No",0,1)
+Full_Data$`Associated infection` <- ifelse(Full_Data$`Associated infection`=="No",0,1)
+write.table(Full_Data, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Full_Data.txt", 
+            sep="\t", 
+            quote=T)
+head(Full_Data)
+```
+
+Plink is a software run the command shell or terminal meaning that results cannot be output to R, so I have included the command I use for the association along with a summary of the results so that this can be visualized in a single document
+```{}
+plink --bfile RSVData --covar RSVCovariates.txt --logistic  
+```
+
+I clean up the ancestry portion of the data and code it by corresponding factor levels (1:Asian, 2:Black/AA, 3:Hispanic, 4:Mix, 5:Other, 6:White)
+```{r}
+Full_Data$Race <- as.factor(Full_Data$Race)
+Full_Data$Race <- Full_Data$Race %>% fct_collapse(Other=c("Other", "Other/Unknown"), 
+                                                  "White"=c("white", "White"))
+
+## I tried using dummy variable by first encoding them myself into a covariate file and then using the plink call below
+## plink --bfile RSVData --covar RSVCovariates.txt --logistic
+
+Full_Data$Asian <- ifelse(Full_Data$Race=="Asian", 1, 0)
+Full_Data$Black <- ifelse(Full_Data$Race=="Black or African American", 1, 0)
+Full_Data$Hispanic <- ifelse(Full_Data$Race=="Hispanic", 1, 0)
+Full_Data$Mix <- ifelse(Full_Data$Race=="Mix", 1, 0)
+Full_Data$Other <- ifelse(Full_Data$Race=="Other", 1, 0)
+```
+
+I use the biomaRt package to get the chromosome and position for each of the rsIDs which are then passed along with the IDs themselves to MAP file for PLINK associations
+```{r}
+mart = useMart("ENSEMBL_MART_SNP", dataset="hsapiens_snp")
+snp_ids = colnames(Full_Data)[9:24]
+one <- strsplit(snp_ids[8], "/")[[1]][1]
+two <- strsplit(snp_ids[8], "/")[[1]][2]
+snp_ids2 <- c(snp_ids, one, two)
+snp_attributes = c("refsnp_id", "chr_name", "chrom_start")
+snp_locations = getBM(attributes=snp_attributes, 
+                      filters="snp_filter", 
+                      values=snp_ids2, 
+                      mart=mart)
+snp_locations
+```
+
+Both a PED and MAP file are required for the PLINK associations, with the PED file including IDs, sex and phenotype, and the MAP file including the chromosome, rsID, genetic distance and position of the snp
+It should be noted that in the original data the snps which were coded as "rs1059057/rs141764116" when mapped using biomaRt came up as only rs1059057 and as such were reffered to here on out as just that single snp
+```{r}
+PEDFile <- data.frame(cbind("FID"=paste0("FAM", sample(seq(1, nrow(Full_Data), by=1), replace=F)), 
+                 "IID"= 1, 
+                 "PID"=1, 
+                 "MID"=1, 
+                 "SEX"=Full_Data$Gender, 
+                 "Pheno"=Full_Data$Phenotype,
+                 "rs1059046"=unlist(lapply(strsplit(Full_Data$rs1059046,''), paste, collapse = ' ')),
+                 "rs1059047"=unlist(lapply(strsplit(Full_Data$rs1059047,''), paste, collapse = ' ')),
+                 "rs1059057"=unlist(lapply(strsplit(Full_Data$`rs1059057/rs141764116`,''), paste, collapse = ' ')),
+                 "rs1124"=unlist(lapply(strsplit(Full_Data$rs1124,''), paste, collapse = ' ')),
+                 "rs1130866"=unlist(lapply(strsplit(Full_Data$rs1130866,''), paste, collapse = ' ')),
+                 "rs1136450"=unlist(lapply(strsplit(Full_Data$rs1136450,''), paste, collapse = ' ')),
+                 "rs1136451"=unlist(lapply(strsplit(Full_Data$rs1136451,''), paste, collapse = ' ')),
+                 "rs17886395"=unlist(lapply(strsplit(Full_Data$rs17886395,''), paste, collapse = ' ')),
+                 "rs1965707"=unlist(lapply(strsplit(Full_Data$rs1965707,''), paste, collapse = ' ')),
+                 "rs1965708"=unlist(lapply(strsplit(Full_Data$rs1965708,''), paste, collapse = ' ')),
+                 "rs2077079"=unlist(lapply(strsplit(Full_Data$rs2077079,''), paste, collapse = ' ')),
+                 "rs2243639"=unlist(lapply(strsplit(Full_Data$rs2243639,''), paste, collapse = ' ')),
+                 "rs3024798"=unlist(lapply(strsplit(Full_Data$rs3024798,''), paste, collapse = ' ')),
+                 "rs4253527"=unlist(lapply(strsplit(Full_Data$rs4253527,''), paste, collapse = ' ')),
+                 "rs4715"=unlist(lapply(strsplit(Full_Data$rs4715,''), paste, collapse = ' ')),
+                 "rs721917"=unlist(lapply(strsplit(Full_Data$rs721917,''), paste, collapse = ' '))))
+
+MAPFile <- data.frame(cbind("chromosome"=snp_locations$chr_name, 
+                 "rsID"=data.frame("rsID"=snp_locations$refsnp_id), 
+                 "Genetic Distance"=data.frame("Genetic Distance"=matrix(0, nrow=length(colnames(Full_Data)[9:24]), ncol=1)), 
+                 "BP"=snp_locations$chrom_start))
+
+CovarFile <- data.frame(cbind("FID"=PEDFile$FID,
+                        "IID"=PEDFile$IID,
+                        "Sex"=PEDFile$SEX,
+                        "Smoking"=Full_Data$`Smoking exposure`, # Remove this line for original covariates, only run for updated model
+                        "Pets"=Full_Data$`Pet exposure`, # Remove this line for original covariates, only run for updated model
+                        "Infection"=Full_Data$`Associated infection`, # Remove this line for original covariates, only run for updated model
+                        "Ancestry"=Full_Data$Race))
+                        #"Other"=Full_Data$Other,
+                        #"Mix"=Full_Data$Mix,
+                        #"Hispanic"=Full_Data$Hispanic,
+                        #"Black"=Full_Data$Black,
+                        #"Asian"=Full_Data$Asian))
+
+write.table(PEDFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/RSVData.ped", 
+            sep="\t", 
+            quote=F,
+            col.names=F, 
+            row.names=F)
+write.table(MAPFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/RSVData.map", 
+            sep="\t", 
+            quote=F,
+            col.names=F,
+            row.names=F)
+write.table(CovarFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/RSVCovariates.txt", 
+            sep="\t", 
+            quote=F, 
+            col.names=T, 
+            row.names=F)
+```
+
+Next I tried to use the plink software to automatically create the dummy variables for Ancestry only and then re-read in the covariate file to add in the age covariate
+```{}
+plink --file RSVData --covar RSVCovariates.txt --write-covar --dummy-coding
+```
+
+```{r}
+Covar <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/plink.cov", sep=" ", header=T)
+Covar1 <- cbind(Covar, "Age"=as.numeric(Full_Data$`Age in Months`))
+Covar2 <- cbind(Covar, "Age"=as.numeric(Full_Data$`Age in Months`), "SexAge"=as.numeric(Full_Data$`Age in Months`)*Covar$Sex)
+write.table(Covar1, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/RSVCovariates.txt", 
+            sep="\t", 
+            quote=F, 
+            col.names=T, 
+            row.names=F)
+write.table(Covar2, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/RSVCovariates.Interaction.txt", 
+            sep="\t", 
+            quote=F, 
+            col.names=T, 
+            row.names=F)
+```
+
+# Running PLINK
+Finally we convert our file to respective bed, bim and fam files to read into PLINK. I used PLINK2 for the logistic models and PLINK for the association maodel. Additionnally I used both PLINK's dummy-variable software to create the ancestry covariates as well as making my own. Between these there was no difference in the model results.
+```{}
+plink --file RSVData --out RSVData --make-bed
+
+plink --file RSVData --covar RSVCovariates.txt --assoc
+
+plink2 --bfile RSVData --covar RSVCovariates.txt --glm hide-covar
+```
+
+And here are our results for the association:
+```{}
+PLINK v2.00a2.3 64-bit (24 Jan 2020)           www.cog-genomics.org/plink/2.0/
+(C) 2005-2020 Shaun Purcell, Christopher Chang   GNU General Public License v3
+Logging to plink2.log.
+Options in effect:
+  --bfile RSVData
+  --covar RSVCovariates.txt
+  --glm hide-covar
+
+Start time: Mon Oct 18 06:45:05 2021
+8192 MiB RAM detected; reserving 4096 MiB for main workspace.
+Using up to 8 compute threads.
+402 samples (186 females, 216 males; 0 founders) loaded from RSVData.fam.
+16 variants loaded from RSVData.bim.
+1 binary phenotype loaded (231 cases, 171 controls).
+20 covariates loaded from RSVCovariates.txt.
+Warning: --glm remaining control count is less than 10x predictor count for
+phenotype 'PHENO1'.
+Warning: Not including covariate 'Ancestry_4' in --glm regression on phenotype
+'PHENO1'.
+--glm logistic regression on phenotype 'PHENO1': done.
+Results written to plink2.PHENO1.glm.logistic .
+```
+
+You will notice above in the line marked (HERE), we are given a warning concerning one of our Ancestry dummy variables, this is due to PLINK2's automatic checking of multicolinearity, scale check and relevance. If a covariate does not pass these checks it is excluded from the analysis.
+
+According to PLINK's documentation: "the p-values for each line reflect the effect of the entity under the TEST column, not of the SNP whilst controlling for that particular covariate". So we need to look at the TEST labeled ADD for the additive model containing the covariates, this P-Value will give us the significance of the SNP.
+```{r}
+results <-fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/plink2.PHENO1.glm.logistic",
+                sep="\t", 
+                header=T)
+colnames(results)[colnames(results) == "#CHROM"] <- "CHR"
+colnames(results)[colnames(results) == "POS"] <- "BP"
+colnames(results)[colnames(results) == "ID"] <- "SNP"
+results <- transform(results, CHR = as.numeric(CHR))
+results <- transform(results, P = as.numeric(P))
+results
+```
+
+# Results
+For the results I show both the hard data for each model as well as a quantile-quantile plot and manhattan plot. For the latter I set the significance equal to the standard 0.05 and divided by the number of variants (16). This is then plotted as the -log10 of the P-Value for each SNP and shown on the Y-axis. This is the level at which a SNP becomes significant in our analysis.
+```{r}
+qq(results$P, cex=1, main="QQ-Plot")
+manhattan(results,chr="CHR",bp="BP",p="P",snp="SNP",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/16), main="Manhattan Plot Normal Covariates")
+```
+
+As none of the SNPs show significance we move on to a systematic removal of covariates in order to see if this changes the significance of our results.
+
+### Minus Sex
+Fisrt we look at the model without the Sex covariate only.
+```{r}
+MinusSex <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/MinusAge.PHENO1.glm.logistic", 
+                  sep="\t", header=T)
+MinusSex
+qq(MinusSex$P, cex=1, main="QQ-Plot")
+manhattan(MinusSex,chr="#CHROM",bp="POS",p="P",snp="SNP",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/16), main="Manhattan Plot Age and Ancestry")
+```
+
+### Minus Age
+Next we look at the model without the Age covariate only.
+```{r}
+MinusAge <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/MinusSex.PHENO1.glm.logistic", 
+      sep="\t", header=T)
+MinusAge
+qq(MinusAge$P, cex=1, main="QQ-Plot")
+manhattan(MinusAge,chr="#CHROM",bp="POS",p="P",snp="SNP",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/16), main="Manhattan Plot Sex and Ancestry")
+```
+
+### Minus Sex & Age
+Then we look at the model without both Sex and Age.
+```{r}
+MinusSexandAge <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/MinusSexandAge.PHENO1.glm.logistic", 
+      sep="\t", header=T)
+MinusSexandAge
+qq(MinusSexandAge$P, cex=1, main="QQ-Plot")
+manhattan(MinusSexandAge,chr="#CHROM",bp="POS",p="P",snp="SNP",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/16), main="Manhattan Plot Ancestry Only")
+```
+
+### No Covariates
+Finally we remove all covariates from the model.
+```{r}
+NoCov <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/NoCov.PHENO1.glm.logistic", 
+               sep="\t", header=T)
+NoCov
+qq(NoCov$P, cex=1, main="QQ-Plot")
+manhattan(NoCov,chr="#CHROM",bp="POS",p="P",snp="SNP",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/16), main="Manhattan Plot No Covariates")
+```
+
+As the models continue to show a lack of significance in terms of the SNPs I then moved on to including an interaction term(s) in the models.
+
+### Sex*Age Interaction w/ All Other Covariates
+First I tried a basic Sex*Age interaction which is commonly used in GWAS/Meta-Analysis.
+```{r}
+SexAgeInt <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Interaction.PHENO1.glm.logistic", 
+               sep="\t", header=T)
+SexAgeInt
+qq(SexAgeInt$P, cex=1, main="QQ-Plot")
+manhattan(SexAgeInt,chr="#CHROM",bp="POS",p="P",snp="SNP",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/16), main="Manhattan Plot Sex*Age Interaction")
+```
+
+### Full PLINK Interaction
+Moving on from the Sex*Age interaction I decided to try PLINK's interaction function. In this function PLINK generates a swath of interations between each of the covariates and then filters based on multicollinearity and low impact.
+```{r}
+Interact <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Interaction2.PHENO1.glm.logistic", 
+               sep="\t", header=T)
+Interact
+qq(Interact$P, cex=1, main="QQ-Plot")
+manhattan(Interact,chr="#CHROM",bp="POS",p="P",snp="SNP",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/16), main="Manhattan Plot Full PLINK Interaction")
+```
+
+### PLINK Association w/ Covariates 
+Finally I tried a basic association model (case/control) with the covariates, followed by an association without covariates to see if any significant SNPs could be detected.
+```{r}
+Assoc1 <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Association.assoc", 
+               sep=" ", header=T)
+qq(Assoc1$P, cex=1, main="QQ-Plot")
+manhattan(Assoc1,chr="CHR",bp="BP",p="P",snp="SNP",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/16), main="Manhattan Plot Association Model w/ Covariates")
+```
+
+
+### PLINK Association w/o Covariates
+```{r}
+Assoc2 <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Association2.assoc", 
+               sep=" ", header=T)
+qq(Assoc2$P, cex=1, main="QQ-Plot")
+manhattan(Assoc2,chr="CHR",bp="BP",p="P",snp="SNP",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/16), main="Manhattan Plot Association Model w/o Covariates")
+```
+
+```{r}
+UpCovGLM <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/UpdatedCovariates.PHENO1.glm.logistic", 
+                  sep="\t", header=T)
+UpCovAssoc <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/UpdatedCovariatesAssoc.assoc", 
+                    sep=" ", header=T)
+```
+
+```{r}
+qq(UpCovGLM$P, cex=1, main="QQ-Plot")
+manhattan(UpCovGLM,chr="#CHROM",bp="POS",p="P",snp="ID",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/16), main="Manhattan Plot Association Model w/ Updated Covariates")
+```
+
+```{r}
+qq(UpCovAssoc$P, cex=1, main="QQ-Plot")
+manhattan(UpCovAssoc,chr="CHR",bp="BP",p="P",snp="SNP",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/16), main="Manhattan Plot Association Model w/ Updated Covariates")
+```
+
+Analysis: Unfortunately as we can see from each of the models none of the SNPs recorded show a P-Value equal to, or less than our cutoff which suggests that there are no significant associations between the SNPs recorded and the outcomes for RSV. The covariates used seemed only usefull in the logistic models used, but generally speaking those models failed to produce results for particular SNPs, most commonly rs3024798 & rs2077079. According to PLINK, NA's are the result of multicollinearity; "A multicollinearity check is performed before each regression. When it fails, the regression is skipped and 'NA' results are reported". However this was not seen in the rs1059057/rs141764116, most likely due to the removal of rs141764116. As for the association models, it seems these performed the "best" in terms of SNPs being closest to significance but these models are rarely used anymore with linear/logistic models replacing them. Overall a lack of covariates showed the "best" results in both model types (logistic/association), but again only in terms of "SNPs being closest to significance".
+
+For a model using the multi-allelic varients to predict patient outcomes I build new a dataset using dummy encoding for each of the multiallelic variants setting the varient "00" as (0,....,0) for both SP-A1 and SP-A2 genotypes.
+```{r}
+MultiAllelic <- data.frame(cbind(#"ID"=Full_Data$`Genotype number`, 
+                                 "Sex"=Full_Data$Gender, 
+                                 "Age"=Full_Data$`Age in Months`, 
+                                 "Asian"=Full_Data$Asian,
+                                 "Black"=Full_Data$Black,
+                                 "Hispanic"=Full_Data$Hispanic,
+                                 "Mix"=Full_Data$Mix,
+                                 "Other"=Full_Data$Other,
+                                 "Smoking"=Full_Data$`Smoking exposure`,
+                                 "Pet"=Full_Data$`Pet exposure`,
+                                 "Infection"=Full_Data$`Associated infection`,
+                                 "Outcome"= ifelse(Full_Data$Phenotype==1,0,1)))
+MultiAllelic$`V1A1A` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A/1A", 1, 0)
+MultiAllelic$`V1A01A3` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A0/1A3", 1, 0)
+MultiAllelic$`V1A1A5` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A/1A5", 1, 0)
+MultiAllelic$`V1A01A9` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A0/1A9", 1, 0)
+MultiAllelic$`V1A01A0` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A0/1A0", 1, 0)
+MultiAllelic$`V1A1A0` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A/1A0", 1, 0)
+MultiAllelic$`V1A1A1` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A/1A1", 1, 0)
+MultiAllelic$`V1A01A2` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A0/1A2", 1, 0)
+MultiAllelic$`V1A01A5` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A0/1A5", 1, 0)
+MultiAllelic$`V1A11A1` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A1/1A1", 1, 0)
+MultiAllelic$`V1A31A5` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A3/1A5", 1, 0)
+MultiAllelic$`V1A11A2` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A1/1A2", 1, 0)
+MultiAllelic$`V1A1A2` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A/1A2", 1, 0)
+MultiAllelic$`V1A11A3` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A1/1A3", 1, 0)
+MultiAllelic$`V1A11A5` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A1/1A5", 1, 0)
+MultiAllelic$`V1A01A8` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A0/1A8", 1, 0)
+MultiAllelic$`V1A1A3` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A/1A3", 1, 0)
+MultiAllelic$`V1A21A2` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A2/1A2", 1, 0)
+MultiAllelic$`V1A21A5` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A2/1A5", 1, 0)
+MultiAllelic$`V1A51A10` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A5/1A10", 1, 0)
+MultiAllelic$`V1A51A5` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A5/1A5", 1, 0)
+MultiAllelic$`V1A11A10` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A1/1A10", 1, 0)
+MultiAllelic$`V1A01A12` <- ifelse(Full_Data$`SP-A2 Genotype` == "1A0/1A12", 1, 0)
+MultiAllelic$`VNE2` <- ifelse(Full_Data$`SP-A2 Genotype` == "NE2", 1, 0)
+MultiAllelic$`VNE1` <- ifelse(Full_Data$`SP-A2 Genotype` == "NE1", 1, 0)
+MultiAllelic$`VNE3` <- ifelse(Full_Data$`SP-A2 Genotype` == "NE3", 1, 0)
+MultiAllelic$`VNE10` <- ifelse(Full_Data$`SP-A2 Genotype` == "NE10", 1, 0)
+MultiAllelic$`V6A26A3` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A2/6A3", 1, 0)
+MultiAllelic$`V6A6A4` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A/6A4", 1, 0)
+MultiAllelic$`V6A6A` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A/6A", 1, 0)
+MultiAllelic$`V6A26A2` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A2/6A2", 1, 0)
+MultiAllelic$`V6A6A2` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A/6A2", 1, 0)
+MultiAllelic$`V6A46A4` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A4/6A4", 1, 0)
+MultiAllelic$`V6A6A3` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A2/6A3", 1, 0)
+MultiAllelic$`V6A26A4` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A2/6A4", 1, 0)
+MultiAllelic$`V6A36A3` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A3/6A3", 1, 0)
+MultiAllelic$`V6A26A7V6A36A6` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A2/6A7 OR 6A3/6A6", 1, 0)
+MultiAllelic$`V6A36A4` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A3/6A4", 1, 0)
+MultiAllelic$`V6A126A13V6A26A18` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A12/6A13 OR 6A2/6A18", 1, 0)
+MultiAllelic$`V6A26A8` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A2/6A8", 1, 0)
+MultiAllelic$`V6A36A14` <- ifelse(Full_Data$`SP-A1 Genotype` == "6A3/6A14", 1, 0)
+MultiAllelic <- sapply(MultiAllelic, as.numeric)
+MultiAllelic <- as.data.frame(MultiAllelic)
+```
+
+### Next we build a Multivariate-Model which contains all of the multi-allelic variants at once
+```{r}
+MultiAllelicLM <- glm(Outcome ~ ., data=MultiAllelic, family=binomial)
+summary(MultiAllelicLM)
+```
+
+```{r}
+MAodds <- exp(MultiAllelicLM$coefficients)
+MALMData <- as.data.frame(cbind("Name"=matrix(names(MultiAllelicLM$coefficients), ncol=1)[-c(7,41,45)],
+                                "OR"=na.omit(unname(MAodds)),
+                                "P"=matrix(coef(summary(MultiAllelicLM))[,4], ncol=1)))
+colnames(MALMData)[colnames(MALMData) == "V2"] <- "Beta"
+colnames(MALMData)[colnames(MALMData) == "V3"] <- "P"
+MALMData
+```
+
+From these we results we find significance in varients NE1, 1A0/1A0 & 1A0/1A3 with additional significance in covariates Age, Pet and Infection. Specifically if we look at the variants, NE1 is considered risky, 1A0/1A0 is risky and 1A0/1A3 is also risky based off their calculated odds ratios as each of their beta estimates are > 1.
+
+```{r}
+AgebyOutcome <- data.table(cbind(MultiAllelic$Age, MultiAllelic$Outcome))
+Deaths <- AgebyOutcome %>% filter( V2 == "1")
+Lived <- AgebyOutcome %>% filter( V2 == "0")
+hist(Lived$V1, main="Histogram of Patients Who Lived", xlab=paste0("Age (Average: ",mean(Lived$V1),")"))
+abline(v=mean(Lived$V1), col="red")
+hist(Deaths$V1, main="Histogram of Patients Who Died", xlab=paste0("Age (Average: ",mean(Deaths$V1),")"))
+abline(v=mean(Deaths$V1), col="red")
+```
+
+
+```{r}
+a <- c()
+Varients <- colnames(MultiAllelic[12:52])
+for (i in colnames(MultiAllelic[12:52])){
+  x <- paste0("Outcome ~ ", i, " + Sex + Age + Asian + Black + Hispanic + Mix + Other + Smoking + Pet + Infection")
+  individualmodel <- glm(as.formula(x), data=MultiAllelic, family=binomial)
+  a <- c(a, coef(summary(individualmodel))[2,4])
+}
+IndMod <- as.data.frame(cbind("Varients"=Varients, "PValues"=a))
+IndMod  %>% arrange(PValues)
+```
+
+When looking at individual tests however we find that there is no significance in any of the variants.
+
+### Confidence Intervals for Full Multivariate-Model
+```{r}
+exp(na.omit(confint.default(MultiAllelicLM, level=0.95)))
+```
+
+
+For Individual tests we found nothing of significance for multi-allelic variants.
+
+### Likelihood Ratio Tests
+```{r}
+fullmodel <- glm(Outcome ~ ., data=MultiAllelic, family=binomial)
+covmodel <- glm(Outcome ~ Sex + Age + Black + Asian + Hispanic + Other + Mix + Smoking + Pet + Infection, data=MultiAllelic, family=binomial)
+
+lrtest(fullmodel, covmodel)
+```
+
+I performed the likelihood ratio test to compare the fit of the two models, i.e. does the data fit each of the two models equally well, and from this we see that with a Chisq of 57.445 and P-Value of 0.02865, that we reject the null hypothesis that the two are equal. Therefore, the model with the additional multi-allelic variants is a better fit and offers significant improvement over the model with only the covarites as our predictors.
+
+### MAF 
+```{r}
+# plink --file RSVData --freq --mind 1 --nonfounders
+
+Freq <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/plink.frq", sep=" ", header=T)
+Freq
+```
+
+
+### Dominant Recessive Run
+```{r}
+# plink2 --bfile RSVData --covar RSVCovariates.txt --glm hide-covar genotypic
+
+DomRec <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/DOMDEV.PHENO1.glm.logistic", sep="\t", header=T)
+DomRec
+```
+
+In trying the dominant/recessive model I found that there were a lot more sparsity within the results with only a single significant SNP prior to p-value correction, rs3024798, with the additive models for 	rs2243639 & rs17886395 being significant. However when considering the p-value correction to P = 0.003125, no SNP is significant any longer.
+
+### Frequency Table
+```{r}
+FrequencyTable <- as.data.frame(cbind("SNP ID"=Freq$SNP, 
+                                      "Chromosome"=Freq$CHR,
+                                      "Allele 1"=Freq$A1, 
+                                      "Allele 1 Frequency"=(1-Freq$MAF), 
+                                      "Allele 2"=Freq$A2, 
+                                      "Allele 2 Frequency"=Freq$MAF))
+FrequencyTable %>%
+  kbl(caption = "Allele Frequencies of PossibleRSV Associated SNPs") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+```{r}
+casefreq <- PEDFile[1:231,]
+contfreq <- PEDFile[232:402,]
+write.table(casefreq, file="/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/CaseFreq.ped", 
+            sep="\t",
+            quote=F,
+            col.names=F, 
+            row.names=F)
+write.table(MAPFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/CaseFreq.map", 
+            sep="\t", 
+            quote=F,
+            col.names=F,
+            row.names=F)
+write.table(contfreq, file="/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/ControlFreq.ped", 
+            sep="\t",
+            quote=F,
+            col.names=F, 
+            row.names=F)
+write.table(MAPFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/ControlFreq.map", 
+            sep="\t", 
+            quote=F,
+            col.names=F,
+            row.names=F)
+
+# plink --file CaseFreq --freq --mind 1 --nonfounders --out CaseFreq
+# plink --file ControlFreq --freq --mind 1 --nonfounders --out ContFreq
+```
+
+```{r}
+CaFreq <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/CaseFreq.frq", sep=" ", header=T)
+CoFreq <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/ContFreq.frq", sep=" ", header=T)
+
+CaFrequencyTable <- as.data.frame(cbind("SNP ID"=CaFreq$SNP, 
+                                        "Chromosome"=CaFreq$CHR, 
+                                        "Allele 1"=CaFreq$A1, 
+                                        "Allele 1 Frequency"=(1-CaFreq$MAF), 
+                                        "Allele 2"=CaFreq$A2, 
+                                        "Allele 2 Frequency"=CaFreq$MAF))
+
+CoFrequencyTable <- as.data.frame(cbind("SNP ID"=CoFreq$SNP, 
+                                        "Chromosome"=CoFreq$CHR, 
+                                        "Allele 1"=CoFreq$A1, 
+                                        "Allele 1 Frequency"=(1-CoFreq$MAF), 
+                                        "Allele 2"=CoFreq$A2, 
+                                        "Allele 2 Frequency"=CoFreq$MAF))
+
+CaFrequencyTable %>%
+  kbl(caption = "Allele Frequencies of Possible Case Associated SNPs") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+CoFrequencyTable %>%
+  kbl(caption = "Allele Frequencies of Possible Control Associated SNPs") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+### PLINK Command for Recoding
+```{}
+plink --bfile RSVData --covar RSVCovariates.txt --recodeAD --out RSVrecode
+```
+
+### Permutations Testing
+```{r}
+recode <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/RSVrecode.raw", sep=" ", header=T)
+recodecov <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/RSVrecode.cov", sep=" ", header=T)
+Rrs1130866 <- c()
+Rrs3024798 <- c()
+Rrs2077079 <- c()
+Rrs4715 <- c()
+Rrs1124 <- c()
+Rrs1965708 <- c()
+Rrs1965707 <- c()
+Rrs17886395 <- c()
+Rrs1059046 <- c()
+Rrs1059047 <- c()
+Rrs1136450 <- c()
+Rrs1136451 <- c()
+Rrs1059057 <- c()
+Rrs4253527 <- c()
+Rrs2243639 <- c()
+Rrs721917 <- c()
+recode <- dplyr::select(recode,-ends_with("HET"))
+recode <- dplyr::select(recode,-c(PAT,MAT,SEX))
+recode <- merge(recode, recodecov, by='FID')
+recode$PHENOTYPE <- ifelse(recode$PHENOTYPE==2,1,0)
+```
+
+```{r}
+vec <- colnames(dplyr::select(recode, starts_with("rs")))
+t <- 1000
+N <- nrow(recode)
+for (i in 1:t){
+  recode$PHENOTYPE <- recode$PHENOTYPE[sample(nrow(recode), N, replace=F)]
+  rs1130866 <- glm(
+    PHENOTYPE ~ rs1130866_C + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs3024798 <- glm(
+    PHENOTYPE ~ rs3024798_A + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs2077079 <- glm(
+    PHENOTYPE ~ rs2077079_C + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs4715 <- glm(
+    PHENOTYPE ~ rs4715_A + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs1124 <- glm(
+    PHENOTYPE ~ rs1124_A + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs1965708 <- glm(
+    PHENOTYPE ~ rs1965708_A + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs1965707 <- glm(
+    PHENOTYPE ~ rs1965707_T + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs17886395 <- glm(
+    PHENOTYPE ~ rs17886395_C + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs1059046 <- glm(
+    PHENOTYPE ~ rs1059046_C + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs1059047 <- glm(
+    PHENOTYPE ~ rs1059047_C + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs1136450 <- glm(
+    PHENOTYPE ~ rs1136450_C + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs1136451 <- glm(
+    PHENOTYPE ~ rs1136451_G + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs1059057 <- glm(
+    PHENOTYPE ~ rs1059057_G + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs4253527 <- glm(
+    PHENOTYPE ~ rs4253527_T + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs2243639 <- glm(
+    PHENOTYPE ~ rs2243639_A + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  rs721917 <- glm(
+    PHENOTYPE ~ rs721917_C + Sex + Smoking + Pets + Infection + Ancestry_6 + Ancestry_3 + Ancestry_5 + Ancestry_4 + Ancestry_1 + Age, 
+    data=recode, family="binomial")
+  Rrs1130866 <- append(Rrs1130866, summary(rs1130866)$coefficients[2,4])
+  Rrs3024798 <- append(Rrs3024798, summary(rs3024798)$coefficients[2,4])
+  Rrs2077079 <- append(Rrs2077079, summary(rs2077079)$coefficients[2,4])
+  Rrs4715 <- append(Rrs4715, summary(rs4715)$coefficients[2,4])
+  Rrs1124 <- append(Rrs1124, summary(rs1124)$coefficients[2,4])
+  Rrs1965708 <- append(Rrs1965708, summary(rs1965708)$coefficients[2,4])
+  Rrs1965707 <- append(Rrs1965707, summary(rs1965707)$coefficients[2,4])
+  Rrs17886395 <- append(Rrs17886395, summary(rs17886395)$coefficients[2,4])
+  Rrs1059046 <- append(Rrs1059046, summary(rs1059046)$coefficients[2,4])
+  Rrs1059047 <- append(Rrs1059047, summary(rs1059047)$coefficients[2,4])
+  Rrs1136450 <- append(Rrs1136450, summary(rs1136450)$coefficients[2,4])
+  Rrs1136451 <- append(Rrs1136451, summary(rs1136451)$coefficients[2,4])
+  Rrs1059057 <- append(Rrs1059057, summary(rs1059057)$coefficients[2,4])
+  Rrs4253527 <- append(Rrs4253527, summary(rs4253527)$coefficients[2,4])
+  Rrs2243639 <- append(Rrs2243639, summary(rs2243639)$coefficients[2,4])
+  Rrs721917 <- append(Rrs721917, summary(rs721917)$coefficients[2,4])
+  Permutation_Results <- as.data.frame(cbind("rs1130866"=Rrs1130866,
+                                             "rs3024798"=Rrs3024798,
+                                             "rs2077079"=Rrs2077079,
+                                             "rs4715"=Rrs4715,
+                                             "rs1124"=Rrs1124,
+                                             "rs1965708"=Rrs1965708,
+                                             "rs1965707"=Rrs1965707,
+                                             "rs17886395"=Rrs17886395,
+                                             "rs1059046"=Rrs1059046,
+                                             "rs1059047"=Rrs1059047,
+                                             "rs1136450"=Rrs1136450,
+                                             "rs1136451"=Rrs1136451,
+                                             "rs1059057"=Rrs1059057,
+                                             "rs4253527"=Rrs4253527,
+                                             "rs2243639"=Rrs2243639,
+                                             "rs721917"=Rrs721917))
+}
+
+```
+
+```{r}
+distrib <- data.frame(rowMin(as.matrix(Permutation_Results)))
+colnames(distrib) <- "P_Value"
+```
+
+### Histograms for Each SNP w/ P-Value
+```{r,warning=FALSE}
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs1130866
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1130866 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[1]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[1]), col="red")
+
+#rs4715
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs4715 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[4]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[4]), col="red")
+
+#rs1124
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1124 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[5]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[5]), col="red")
+
+#rs1965708
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1965708 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[6]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[6]), col="red")
+```
+
+```{r,warning=FALSE}
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs1965707
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1965707 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[7]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[7]), col="red")
+
+#rs17886395
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs17886395 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[8]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[8]), col="red")
+
+#rs1059046
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1059046 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[9]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[9]), col="red")
+
+#rs1059047
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1059047 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[10]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[10]), col="red")
+```
+
+```{r,warning=FALSE}
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs1136450
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1136450 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[11]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[11]), col="red")
+
+#rs1136451
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1136451 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[12]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[12]), col="red")
+
+#rs1059057
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1059057 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[13]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[13]), col="red")
+
+#rs4253527
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs4253527 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[14]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[14]), col="red")
+```
+
+```{r,warning=FALSE}
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs3024798
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs3024798 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[2]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[2]), col="red")
+
+#rs2077079
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs2077079 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[3]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[3]), col="red")
+
+#rs2243639
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs2243639 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[15]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[15]), col="red")
+
+#rs721917
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs721917 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < UpCovAssoc$P[16]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(UpCovAssoc$P[16]), col="red")
+```
+
+### Permutations for Association 2 (Association without covariates)
+```{r}
+recode <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/RSVrecode.raw", sep=" ", header=T)
+recodecov <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/RSVrecode.cov", sep=" ", header=T)
+Rrs1130866 <- c()
+Rrs3024798 <- c()
+Rrs2077079 <- c()
+Rrs4715 <- c()
+Rrs1124 <- c()
+Rrs1965708 <- c()
+Rrs1965707 <- c()
+Rrs17886395 <- c()
+Rrs1059046 <- c()
+Rrs1059047 <- c()
+Rrs1136450 <- c()
+Rrs1136451 <- c()
+Rrs1059057 <- c()
+Rrs4253527 <- c()
+Rrs2243639 <- c()
+Rrs721917 <- c()
+recode <- dplyr::select(recode,-ends_with("HET"))
+recode <- dplyr::select(recode,-c(PAT,MAT,SEX))
+recode <- merge(recode, recodecov, by='FID')
+recode$PHENOTYPE <- ifelse(recode$PHENOTYPE==2,1,0)
+vec <- colnames(dplyr::select(recode, starts_with("rs")))
+t <- 1000
+N <- nrow(recode)
+for (i in 1:t){
+  recode$PHENOTYPE <- recode$PHENOTYPE[sample(nrow(recode), N, replace=F)]
+  rs1130866 <- glm(PHENOTYPE ~ rs1130866_C, data=recode, family="binomial")
+  rs3024798 <- glm(PHENOTYPE ~ rs3024798_A, data=recode, family="binomial")
+  rs2077079 <- glm(PHENOTYPE ~ rs2077079_C, data=recode, family="binomial")
+  rs4715 <- glm(PHENOTYPE ~ rs4715_A, data=recode, family="binomial")
+  rs1124 <- glm(PHENOTYPE ~ rs1124_A, data=recode, family="binomial")
+  rs1965708 <- glm(PHENOTYPE ~ rs1965708_A, data=recode, family="binomial")
+  rs1965707 <- glm(PHENOTYPE ~ rs1965707_T, data=recode, family="binomial")
+  rs17886395 <- glm(PHENOTYPE ~ rs17886395_C, data=recode, family="binomial")
+  rs1059046 <- glm(PHENOTYPE ~ rs1059046_C, data=recode, family="binomial")
+  rs1059047 <- glm(PHENOTYPE ~ rs1059047_C, data=recode, family="binomial")
+  rs1136450 <- glm(PHENOTYPE ~ rs1136450_C, data=recode, family="binomial")
+  rs1136451 <- glm(PHENOTYPE ~ rs1136451_G, data=recode, family="binomial")
+  rs1059057 <- glm(PHENOTYPE ~ rs1059057_G, data=recode, family="binomial")
+  rs4253527 <- glm(PHENOTYPE ~ rs4253527_T, data=recode, family="binomial")
+  rs2243639 <- glm(PHENOTYPE ~ rs2243639_A, data=recode, family="binomial")
+  rs721917 <- glm(PHENOTYPE ~ rs721917_C, data=recode, family="binomial")
+  Rrs1130866 <- append(Rrs1130866, summary(rs1130866)$coefficients[2,4])
+  Rrs3024798 <- append(Rrs3024798, summary(rs3024798)$coefficients[2,4])
+  Rrs2077079 <- append(Rrs2077079, summary(rs2077079)$coefficients[2,4])
+  Rrs4715 <- append(Rrs4715, summary(rs4715)$coefficients[2,4])
+  Rrs1124 <- append(Rrs1124, summary(rs1124)$coefficients[2,4])
+  Rrs1965708 <- append(Rrs1965708, summary(rs1965708)$coefficients[2,4])
+  Rrs1965707 <- append(Rrs1965707, summary(rs1965707)$coefficients[2,4])
+  Rrs17886395 <- append(Rrs17886395, summary(rs17886395)$coefficients[2,4])
+  Rrs1059046 <- append(Rrs1059046, summary(rs1059046)$coefficients[2,4])
+  Rrs1059047 <- append(Rrs1059047, summary(rs1059047)$coefficients[2,4])
+  Rrs1136450 <- append(Rrs1136450, summary(rs1136450)$coefficients[2,4])
+  Rrs1136451 <- append(Rrs1136451, summary(rs1136451)$coefficients[2,4])
+  Rrs1059057 <- append(Rrs1059057, summary(rs1059057)$coefficients[2,4])
+  Rrs4253527 <- append(Rrs4253527, summary(rs4253527)$coefficients[2,4])
+  Rrs2243639 <- append(Rrs2243639, summary(rs2243639)$coefficients[2,4])
+  Rrs721917 <- append(Rrs721917, summary(rs721917)$coefficients[2,4])
+  Permutation_Results <- as.data.frame(cbind("rs1130866"=Rrs1130866,
+                                             "rs3024798"=Rrs3024798,
+                                             "rs2077079"=Rrs2077079,
+                                             "rs4715"=Rrs4715,
+                                             "rs1124"=Rrs1124,
+                                             "rs1965708"=Rrs1965708,
+                                             "rs1965707"=Rrs1965707,
+                                             "rs17886395"=Rrs17886395,
+                                             "rs1059046"=Rrs1059046,
+                                             "rs1059047"=Rrs1059047,
+                                             "rs1136450"=Rrs1136450,
+                                             "rs1136451"=Rrs1136451,
+                                             "rs1059057"=Rrs1059057,
+                                             "rs4253527"=Rrs4253527,
+                                             "rs2243639"=Rrs2243639,
+                                             "rs721917"=Rrs721917))
+}
+distrib <- data.frame(rowMin(as.matrix(Permutation_Results)))
+colnames(distrib) <- "P_Value"
+```
+
+```{r,warning=FALSE}
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs1130866
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1130866 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[1]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[1]), col="red")
+
+#rs4715
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs4715 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[4]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[4]), col="red")
+
+#rs1124
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1124 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[5]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[5]), col="red")
+
+#rs1965708
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1965708 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[6]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[6]), col="red")
+
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs1965707
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1965707 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[7]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[7]), col="red")
+
+#rs17886395
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs17886395 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[8]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[8]), col="red")
+
+#rs1059046
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1059046 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[9]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[9]), col="red")
+
+#rs1059047
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1059047 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[10]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[10]), col="red")
+
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs1136450
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1136450 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[11]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[11]), col="red")
+
+#rs1136451
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1136451 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[12]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[12]), col="red")
+
+#rs1059057
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1059057 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[13]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[13]), col="red")
+
+#rs4253527
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs4253527 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[14]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[14]), col="red")
+
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs3024798
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs3024798 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[2]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[2]), col="red")
+
+#rs2077079
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs2077079 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[3]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[3]), col="red")
+
+#rs2243639
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs2243639 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[15]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[15]), col="red")
+
+#rs721917
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs721917 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < Assoc2$P[16]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(Assoc2$P[16]), col="red")
+```
+
+
+### Permutatinos for LR Model without Covariates (NoCov)
+```{r,warning=FALSE}
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs1130866
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1130866 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[1]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[1]), col="red")
+
+#rs4715
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs4715 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[4]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[4]), col="red")
+
+#rs1124
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1124 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[5]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[5]), col="red")
+
+#rs1965708
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1965708 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[6]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[6]), col="red")
+
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs1965707
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1965707 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[7]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[7]), col="red")
+
+#rs17886395
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs17886395 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[8]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[8]), col="red")
+
+#rs1059046
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1059046 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[9]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[9]), col="red")
+
+#rs1059047
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1059047 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[10]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[10]), col="red")
+
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs1136450
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1136450 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[11]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[11]), col="red")
+
+#rs1136451
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1136451 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[12]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[12]), col="red")
+
+#rs1059057
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs1059057 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[13]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[13]), col="red")
+
+#rs4253527
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs4253527 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[14]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[14]), col="red")
+
+par(mfrow=c(2,2), oma=c(0, 0, 2, 0))
+#rs3024798
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs3024798 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[2]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[2]), col="red")
+
+#rs2077079
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs2077079 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[3]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[3]), col="red")
+
+#rs2243639
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs2243639 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[15]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[15]), col="red")
+
+#rs721917
+hist(as.numeric(distrib$P_Value), xlab=paste0("rs721917 Min P Estimates (P-Value: ",nrow(filter(distrib, distrib$P_Value < NoCov$P[16]))/nrow(distrib),")"), main=NULL)
+abline(v=summary(NoCov$P[16]), col="red")
+```
+
+### Full SNP Model with Covariates
+```{r}
+recode2 <- recode[,3:30]
+recode2 <- subset(recode2, select=-c(IID.y))
+write.table(recode2, "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/RecodedSNPs.txt", quote=F, sep="\t", row.names=F, col.names=T)
+```
+
+```{r}
+FullSNP <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/RecodedSNPs2.txt", sep="\t", header=T)
+fullSNPmodel <- glm(PHENOTYPE ~ ., data=FullSNP, family=binomial)
+summary(fullSNPmodel)
+```
+
+In the full SNP model which performs a logistic regression on all non-multi-allelic SNPs three SNPs are found to be significant, specifically rs17886395 (0.00238), rs1059047 (0.03222) & rs2243639 (0.04545).
+
+### Full SNP Model w/o Covariates
+```{r}
+FullSNP2 <- FullSNP[,1:18]
+fullSNPmodel2 <- glm(PHENOTYPE ~ ., data=FullSNP2, family="binomial")
+summary(fullSNPmodel2)
+```
+
+In the second full SNP model we simply removed the covariates and ran the logistic regression, with rs17886395 (0.0020), rs1059047 (0.0368) & rs2243639 (0.0416) being found to be significant again with similar p-values as in the original model with covariates.
+
+```{r}
+SNP1odds <- exp(fullSNPmodel$coefficients)
+SNP1Data <- as.data.frame(cbind("Name"=matrix(names(fullSNPmodel$coefficients), ncol=1),
+                                "OR"=na.omit(unname(SNP1odds)),
+                                "P"=matrix(coef(summary(fullSNPmodel))[,4], ncol=1),
+                                "2.5%"=matrix(exp(na.omit(confint.default(fullSNPmodel, level=0.95)))[,1]),
+                                "97.5%"=matrix(exp(na.omit(confint.default(fullSNPmodel, level=0.95)))[,2])))
+SNP1Data = SNP1Data[-c(1,2,19,20,21,22,23,24,25,26,27,28),]
+colnames(SNP1Data)[colnames(SNP1Data) == "V1"] <- "Variant"
+colnames(SNP1Data)[colnames(SNP1Data) == "V2"] <- "Beta"
+colnames(SNP1Data)[colnames(SNP1Data) == "V3"] <- "P"
+colnames(SNP1Data)[colnames(SNP1Data) == "V4"] <- "2.5%"
+colnames(SNP1Data)[colnames(SNP1Data) == "V5"] <- "97.5%"
+rownames(SNP1Data) <- NULL
+```
+
+```{r}
+SNP2odds <- exp(fullSNPmodel2$coefficients)
+SNP2Data <- as.data.frame(cbind("Name"=matrix(names(fullSNPmodel2$coefficients), ncol=1),
+                                "OR"=na.omit(unname(SNP2odds)),
+                                "P"=matrix(coef(summary(fullSNPmodel2))[,4], ncol=1),
+                                "2.5%"=matrix(exp(na.omit(confint.default(fullSNPmodel2, level=0.95)))[,1]),
+                                "97.5%"=matrix(exp(na.omit(confint.default(fullSNPmodel2, level=0.95)))[,2])))
+SNP2Data = SNP2Data[-c(1,2),]
+colnames(SNP2Data)[colnames(SNP2Data) == "V1"] <- "Variant"
+colnames(SNP2Data)[colnames(SNP2Data) == "V2"] <- "Beta"
+colnames(SNP2Data)[colnames(SNP2Data) == "V3"] <- "P"
+colnames(SNP2Data)[colnames(SNP2Data) == "V4"] <- "2.5%"
+colnames(SNP2Data)[colnames(SNP2Data) == "V5"] <- "97.5%"
+rownames(SNP2Data) <- NULL
+```
+
+```{r}
+SNP1Data %>%
+  kbl(caption = "Odds Ratios & CIs of Non-Multiallelic SNPs with Covariates") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+
+SNP2Data %>%
+  kbl(caption = "Odds Ratios & CIs of Non-Multiallelic SNPs without Covariates") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+The odds ratios for the SNP model with covariates are, rs17886395 (0.6246), rs1059047 (3.751), and rs2243639 (0.6361). Odds ratios for the SNP model without covariates are rs17886395 (0.6236), rs1059047 (3.580), and rs2243639 (0.6333).
+
+```{r}
+#eft <- cbind(2*log(as.numeric(SNP2Data$OR)), log(as.numeric(SNP2Data$OR)), 2*log(1/as.numeric(SNP2Data$OR)))
+rsIDs <- data.frame("rsID"=c("rs1130866", "rs1130866", "rs1130866",
+                      "rs3024798", "rs3024798", "rs3024798",
+                      "rs2077079", "rs2077079", "rs2077079",
+                      "rs4715", "rs4715", "rs4715",
+                      "rs1124", "rs1124", "rs1124",
+                      "rs1965708", "rs1965708", "rs1965708",
+                      "rs1965707", "rs1965707", "rs1965707",
+                      "rs17886395", "rs17886395", "rs17886395",
+                      "rs1059046", "rs1059046", "rs1059046",
+                      "rs1059047", "rs1059047", "rs1059047",
+                      "rs1136450", "rs1136450", "rs1136450",
+                      "rs1136451", "rs1136451", "rs1136451",
+                      "rs1059057", "rs1059057", "rs1059057",
+                      "rs4253527", "rs4253527", "rs4253527",
+                      "rs2243639", "rs2243639", "rs2243639",
+                      "rs721917", "rs721917", "rs721917"))
+genotype <- data.frame("Genotype"=c("CC","CT","TT",
+                                 "AA","AC","CC",
+                                 "CC","CA","AA",
+                                 "AA","AC","CC",
+                                 "AA","AG","GG",
+                                 "AA","AC","CC",
+                                 "TT","TC","CC",
+                                 "CC","CG","GG",
+                                 "CC","CA","AA",
+                                 "CC","CT","TT",
+                                 "CC","CG","GG",
+                                 "GG","GA","AA",
+                                 "GG","GA","AA",
+                                 "TT","TC","CC",
+                                 "AA","AG","GG",
+                                 "CC","CT","TT"))
+effects <- data.frame("Effects"=c(-0.02014485,-0.01007242,0.02014485,
+                                  -2.02111495,-1.01055747,2.02111495,
+                                  1.01212594,0.50606297,-1.01212594,
+                                  0.06783587,0.03391793,-0.06783587,
+                                  -0.09064304,-0.04532152,0.09064304,
+                                  -1.09602563,-0.54801282,1.09602563,
+                                  0.81886415,0.40943207,-0.81886415,
+                                  -0.94435021,-0.47217511,0.94435021,
+                                  0.10338223,0.05169112,-0.10338223,
+                                  2.55076838,1.27538419,-2.55076838,
+                                  -0.74753707,-0.37376853,0.74753707,
+                                  -0.28813578,-0.14406789,0.28813578,
+                                  -0.83264763,-0.4163238,0.83264763,
+                                  0.71979851,0.35989925,-0.71979851,
+                                  -0.91359747,-0.45679874,0.91359747,
+                                  0.35463888,0.17731944,-0.35463888))
+LBCI <- data.frame("2.5%"=c(-0.7884340, -0.39421701, 0.7884340,
+                     -4.0618607, -2.03093035, 4.0618607,
+                     -0.8976251, -0.44881253, 0.8976251,
+                     -1.2340532, -0.61702658, 1.2340532,
+                     -1.3501499, -0.67507497, 1.3501499,
+                     -2.6853129, -1.34265646, 2.6853129,
+                     -0.5860767, -0.29303834, 0.5860767,
+                     -1.5434128, -0.77170639, 1.5434128,
+                     -1.2744686, -0.63723428, 1.2744686,
+                     0.1563593, 0.07817964, -0.1563593,
+                     -2.0021362, -1.00106810, 2.0021362,
+                     -2.4561488, -1.22807438, 2.4561488,
+                     -3.5734503, -1.78672516, 3.5734503,
+                     -1.2914964, -0.64574819, 1.2914964,
+                     -1.7922393, -0.89611964, 1.7922393,
+                     -0.3843393, -0.19216965, 0.3843393))
+UBCI <- data.frame("CI97.5%"=c(0.74814433, 0.374072165, -0.74814433,
+                     0.01963081, 0.009815404, -0.01963081,
+                     2.92187696, 1.460938479, -2.92187696,
+                     1.36972489, 0.684862444, -1.36972489,
+                     1.16886386, 0.584431929, -1.16886386,
+                     0.49326166, 0.246630831, -0.49326166,
+                     2.22380496, 1.111902481, -2.22380496,
+                     -0.34528764, -0.172643821, 0.34528764,
+                     1.48123303, 0.740616513, -1.48123303,
+                     4.94517747, 2.472588735, -4.94517747,
+                     0.50706207, 0.253531037, -0.50706207,
+                     1.87987720, 0.939938598, -1.87987720,
+                     1.90815504, 0.954077522, -1.90815504,
+                     2.73109339, 1.365546697, -2.73109339,
+                     -0.03495566, -0.017477832, 0.03495566,
+                     1.09361707, 0.546808533, -1.09361707))
+SNP3Data <- cbind(rsIDs, genotype, effects, LBCI, UBCI)
+```
+
+```{r}
+SNP3Data[1:12,] %>%
+  kbl(caption = "SNP Genotype Effect Sizes") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+
+SNP3Data[13:24,] %>%
+  kbl(caption = "SNP Genotype Effect Sizes") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+
+SNP3Data[25:36,] %>%
+  kbl(caption = "SNP Genotype Effect Sizes") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+
+SNP3Data[37:48,] %>%
+  kbl(caption = "SNP Genotype Effect Sizes") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+```{r}
+
+```
+
+
+
+
