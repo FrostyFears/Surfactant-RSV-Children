@@ -2,7 +2,7 @@
 
 Introduction:
 
-Workflow and results for the paper “Hydrophilic But Not Hydrophobic Surfactant Protein Genetic Variants Are Associated With Severe Acute Respiratory Syncytial Virus Infection in Children.”
+Workflow and results for the paper “Hydrophilic But Not Hydrophobic Surfactant Protein Genetic Variants Are Associated With Severe Acute Respiratory Syncytial Virus Infection in Children.” If you want to look at the code directly I suggest perusing the markdown file, but if you want rendered figures I suggest downloading the HTML file.
 
 Citation:
 
